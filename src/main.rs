@@ -65,6 +65,15 @@ macro_rules! parse_error {
     }};
 }
 
+macro_rules! parse_warning {
+    ($ctx:expr, $msg:expr, $line:expr) => {{
+        eprintln!(
+            "babysub: parse warning: at line {} in '{}': {}",
+            $line, $ctx.config.input_path, $msg
+        );
+    }};
+}
+
 #[cfg(feature = "logging")]
 macro_rules! LOG {
     ($($arg:tt)*) => {{
@@ -362,6 +371,7 @@ fn parse_cnf(input_path: String, ctx: &mut SATContext) -> io::Result<()> {
             if let Some(literals) = trivial_clause(clause) {
                 if literals.is_empty() {
                     ctx.formula.reset();
+                    ctx.formula.clauses.push(Clause::new(0, literals));
                     break;
                 } else {
                     ctx.formula.add_clause(literals);
@@ -373,7 +383,7 @@ fn parse_cnf(input_path: String, ctx: &mut SATContext) -> io::Result<()> {
         }
     }
     if clauses_count != ctx.stats.parsed {
-        parse_error!(
+        parse_warning!(
             ctx,
             format!(
                 "Mismatch in declared and parsed clauses: expected {}, got {}",
