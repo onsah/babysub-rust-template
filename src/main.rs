@@ -142,14 +142,7 @@ impl CNFFormula {
             id: clause_id,
             literals: clause,
         };
-        LOG!(
-            "adding clause: {:?} with id: {}",
-            new_clause.literals,
-            new_clause.id
-        );
-        let new_clause_ = new_clause.clone();
-        self.clauses.push(new_clause_);
-
+        
         LOG!(
             "adding clause id: {} to literal matrix for literals: {:?}",
             clause_id,
@@ -157,10 +150,17 @@ impl CNFFormula {
         );
         for &literal in &new_clause.literals {
             self.literal_matrix
-                .entry(literal)
-                .or_insert_with(Vec::new)
-                .push(clause_id);
+            .entry(literal)
+            .or_insert_with(Vec::new)
+            .push(clause_id);
         }
+    
+        LOG!(
+            "adding clause: {:?} with id: {}",
+            new_clause.literals,
+            new_clause.id
+        );
+        self.clauses.push(new_clause);
     }
 
     fn get_clause_index(&self, clause_id: usize) -> usize {
@@ -299,6 +299,46 @@ fn compute_signature(ctx: &mut SATContext) -> u64 {
     hash
 }
 
+/** If clause is trivial, returns None
+ * Otherwise returns the clause that duplicates are removed
+ */
+fn trivial_clause(literals: Vec<i32>) -> Option<Vec<i32>> {
+    let mut positive_occured = vec![false; literals.len()];
+    let mut negative_occured = vec![false; literals.len()];
+
+    let filtered: Vec<i32> = literals.iter().map(|lit| *lit)
+        .filter(|literal| {
+            use std::cmp::Ordering;
+            let index: usize = (literal.abs() - 1).try_into().unwrap();
+
+            match literal.cmp(&0) {
+                Ordering::Greater => if positive_occured[index] {
+                    false
+                } else {
+                    positive_occured[index] = true;
+                    true
+                }
+                Ordering::Less => if negative_occured[index] {
+                    false
+                } else {
+                    negative_occured[index] = true;
+                    true
+                }
+                Ordering::Equal => unreachable!()
+            }
+        })
+        .collect();
+
+    if filtered.iter().any(|lit| {
+        let index: usize = (lit.abs() - 1).try_into().unwrap();
+        positive_occured[index] && negative_occured[index]
+    }) {
+        None
+    } else {
+        Some(filtered)
+    }
+}
+
 fn parse_cnf(input_path: String, ctx: &mut SATContext) -> io::Result<()> {
     let input: Box<dyn Read> = if input_path == "<stdin>" {
         message!(ctx, "reading from '<stdin>'");
@@ -348,7 +388,10 @@ fn parse_cnf(input_path: String, ctx: &mut SATContext) -> io::Result<()> {
                 .filter(|&x| x != 0)
                 .collect();
             LOG!("parsed clause: {:?}", clause);
-            ctx.formula.add_clause(clause);
+            match trivial_clause(clause) {
+                Some(literals) => ctx.formula.add_clause(literals),
+                None => (), // TODO: Empty clause
+            }
             ctx.stats.parsed += 1;
         } else {
             parse_error!(ctx, "CNF header not found.", line_number);
@@ -393,8 +436,36 @@ fn print(ctx: &mut SATContext) {
     }
 }
 
+fn backward_subsume(clause: &mut Clause) {
+    // verbose!(clause, 1, "backward_subsume start");
+
+
+
+    // verbose!(clause, 1, "backward_subsume end");
+}
+
+fn backward_subsumption(ctx: &mut SATContext) {
+    verbose!(ctx, 1, "backward_subsumption start");
+
+    ctx.formula.clauses.sort_by(|clause1, clause2| {
+        clause1.literals.cmp(&clause2.literals)
+    });
+    for clause in ctx.formula.clauses.iter_mut() {
+        backward_subsume(clause);
+        // TODO: connect
+    }
+
+    // TODO: Remove garbage clauses
+
+    verbose!(ctx, 1, "backward_subsumption complete");
+}
+
 fn simplify(ctx: &mut SATContext) {
     verbose!(ctx, 1, "starting to simplify formula");
+
+    // TODO: Empty clause check
+    backward_subsumption(ctx);
+
     verbose!(ctx, 1, "simplification complete");
 }
 
@@ -465,6 +536,8 @@ fn main() {
     if let Err(e) = parse_cnf(ctx.config.input_path.clone(), &mut ctx) {
         die!("Failed to parse CNF: {}", e);
     }
+
+    simplify(&mut ctx);
 
     print(&mut ctx);
     report_stats(&mut ctx);
