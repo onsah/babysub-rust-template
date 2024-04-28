@@ -282,35 +282,21 @@ fn compute_signature(ctx: &mut SATContext) -> u64 {
  * Otherwise returns the clause that duplicates are removed
  */
 fn trivial_clause(literals: Vec<i32>) -> Option<Vec<i32>> {
-    let mut positive_occured = vec![false; literals.len()];
-    let mut negative_occured = vec![false; literals.len()];
+    let mut occured = HashSet::<i32>::with_capacity(literals.len());
 
     let filtered: Vec<i32> = literals.iter().map(|lit| *lit)
         .filter(|literal| {
-            use std::cmp::Ordering;
-            let index: usize = (literal.abs() - 1).try_into().unwrap();
-
-            match literal.cmp(&0) {
-                Ordering::Greater => if positive_occured[index] {
-                    false
-                } else {
-                    positive_occured[index] = true;
-                    true
-                }
-                Ordering::Less => if negative_occured[index] {
-                    false
-                } else {
-                    negative_occured[index] = true;
-                    true
-                }
-                Ordering::Equal => unreachable!()
+            if occured.contains(literal) {
+                false
+            } else {
+                occured.insert(*literal);
+                true
             }
         })
         .collect();
 
-    if filtered.iter().any(|lit| {
-        let index: usize = (lit.abs() - 1).try_into().unwrap();
-        positive_occured[index] && negative_occured[index]
+    if filtered.iter().any(|literal| {
+        occured.contains(literal) && occured.contains(& -literal)
     }) {
         None
     } else {
