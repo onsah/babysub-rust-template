@@ -188,67 +188,6 @@ impl CNFFormula {
         self.clauses.push(clause);
     }
 
-    fn get_clause_index(&self, clause_id: usize) -> usize {
-        self.clauses
-            .iter()
-            .position(|c| c.id == clause_id)
-            .unwrap_or_else(|| die!("clause id not found: {}", clause_id))
-    }
-
-    fn delete_clause(&mut self, clause_id: usize) {
-        let clause_index = self
-            .clauses
-            .iter()
-            .position(|c| c.id == clause_id)
-            .unwrap_or_else(|| die!("clause id not found: {}", clause_id));
-
-        for &literal in &self.clauses[clause_index].literals {
-            self.literal_matrix
-                .get_mut(&literal)
-                .unwrap()
-                .retain(|&id| id != clause_id); // Remove the clause ID
-        }
-
-        LOG!(
-            "attempting to delete clause: {:?} with id: {}",
-            self.clauses[clause_index].literals,
-            clause_id
-        );
-        self.clauses.remove(clause_index);
-        LOG!("deleted clause with id: {}", clause_id);
-    }
-
-    fn delete_literal(&mut self, clause_id: usize, literal: i32) {
-        let clause = self
-            .clauses
-            .iter_mut()
-            .find(|c| c.id == clause_id)
-            .unwrap_or_else(|| panic!("Clause id not found: {}", clause_id));
-
-        LOG!(
-            "attempting to delete literal: {} from clause: {:?}",
-            literal,
-            clause.literals
-        );
-        clause.literals.retain(|&x| x != literal);
-        LOG!(
-            "deleted literal: {} from clause: {:?}",
-            literal,
-            clause.literals
-        );
-
-        LOG!(
-            "attempting to delete clause id: {} for literal: {}",
-            clause_id,
-            literal
-        );
-        self.literal_matrix
-            .get_mut(&literal)
-            .unwrap()
-            .retain(|&id| id != clause_id);
-        LOG!("deleted clause id: {} for literal: {}", clause_id, literal);
-    }
-
     fn reset(&mut self) {
         self.clauses.clear();
         self.literal_matrix.clear();
@@ -494,10 +433,10 @@ fn backward_subsume(clause_index: usize, ctx: &mut SATContext) {
     );
 
     if let Some(min_lit,) = min_lit {
-        for clause_mb_subsumed_index in ctx.formula.literal_matrix[min_lit].iter() {
+        for clause_mb_subsumed_id in ctx.formula.literal_matrix[min_lit].iter() {
             ctx.stats.checked += 1;
     
-            let clause_mb_subsumed = &mut ctx.formula.clauses[*clause_mb_subsumed_index];
+            let clause_mb_subsumed = &mut ctx.formula.clauses[*clause_mb_subsumed_id];
     
             let subsumed = clause_mb_subsumed.literals
                 .iter()
