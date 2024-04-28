@@ -1,7 +1,10 @@
 use clap::{Arg, ArgAction, Command};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
+use std::hash::RandomState;
 use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
+use std::mem::replace;
+use std::ops::{Deref, DerefMut};
 use std::process;
 use std::time::Instant;
 
@@ -103,17 +106,54 @@ struct Stats {
 // TODO: The data structures right now are inefficient and need to be optimized. I will work on
 // this in the next few days. - Bernhard
 
+#[derive(Clone)]
 struct Clause {
     id: usize,
     literals: Vec<i32>,
+    garbage: bool,
 }
 
-impl Clone for Clause {
-    fn clone(&self) -> Self {
+impl Clause {
+    fn new(id: usize, literals: Vec<i32>) -> Clause {
         Clause {
-            id: self.id,
-            literals: self.literals.clone(),
+            id,
+            literals,
+            garbage: false,
         }
+    }
+}
+
+struct LiteralMatrix(HashMap<i32, Vec<usize>>);
+
+impl LiteralMatrix {
+    fn new() -> LiteralMatrix { LiteralMatrix(HashMap::new()) }
+
+    fn connect(&mut self, clause: &Clause) {
+        LOG!(
+            "adding clause id: {} to literal matrix for literals: {:?}",
+            clause_id,
+            new_clause.literals
+        );
+        for &literal in &clause.literals {
+            self.0
+                .entry(literal)
+                .or_insert_with(Vec::new)
+                .push(clause.id);
+        }
+    }
+}
+
+impl Deref for LiteralMatrix {
+    type Target = HashMap<i32, Vec<usize>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for LiteralMatrix {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
     }
 }
 
@@ -121,7 +161,7 @@ struct CNFFormula {
     variables: usize,
     added_clauses: usize,
     clauses: Vec<Clause>,
-    literal_matrix: HashMap<i32, Vec<usize>>,
+    literal_matrix: LiteralMatrix,
 }
 
 impl CNFFormula {
@@ -130,7 +170,7 @@ impl CNFFormula {
             variables: 0,
             added_clauses: 0,
             clauses: Vec::new(),
-            literal_matrix: HashMap::new(),
+            literal_matrix: LiteralMatrix::new(),
         }
     }
 
@@ -138,29 +178,14 @@ impl CNFFormula {
         let clause_id = self.added_clauses;
         self.added_clauses += 1;
 
-        let new_clause = Clause {
-            id: clause_id,
-            literals: clause,
-        };
-        
-        LOG!(
-            "adding clause id: {} to literal matrix for literals: {:?}",
-            clause_id,
-            new_clause.literals
-        );
-        for &literal in &new_clause.literals {
-            self.literal_matrix
-            .entry(literal)
-            .or_insert_with(Vec::new)
-            .push(clause_id);
-        }
+        let clause = Clause::new(clause_id, clause);
     
         LOG!(
             "adding clause: {:?} with id: {}",
             new_clause.literals,
             new_clause.id
         );
-        self.clauses.push(new_clause);
+        self.clauses.push(clause);
     }
 
     fn get_clause_index(&self, clause_id: usize) -> usize {
@@ -222,6 +247,12 @@ impl CNFFormula {
             .unwrap()
             .retain(|&id| id != clause_id);
         LOG!("deleted clause id: {} for literal: {}", clause_id, literal);
+    }
+
+    fn reset(&mut self) {
+        self.clauses.clear();
+        self.literal_matrix.clear();
+        self.added_clauses = 0;
     }
 }
 
@@ -339,6 +370,7 @@ fn trivial_clause(literals: Vec<i32>) -> Option<Vec<i32>> {
     }
 }
 
+// TODO: Refactor this function so that it returns the parsed items as an iterator rather than modifying the formula
 fn parse_cnf(input_path: String, ctx: &mut SATContext) -> io::Result<()> {
     let input: Box<dyn Read> = if input_path == "<stdin>" {
         message!(ctx, "reading from '<stdin>'");
@@ -388,9 +420,13 @@ fn parse_cnf(input_path: String, ctx: &mut SATContext) -> io::Result<()> {
                 .filter(|&x| x != 0)
                 .collect();
             LOG!("parsed clause: {:?}", clause);
-            match trivial_clause(clause) {
-                Some(literals) => ctx.formula.add_clause(literals),
-                None => (), // TODO: Empty clause
+            if let Some(literals) = trivial_clause(clause) {
+                if literals.is_empty() {
+                    ctx.formula.reset();
+                    break;
+                } else {
+                    ctx.formula.add_clause(literals);
+                }
             }
             ctx.stats.parsed += 1;
         } else {
@@ -436,10 +472,43 @@ fn print(ctx: &mut SATContext) {
     }
 }
 
-fn backward_subsume(clause: &mut Clause) {
+fn backward_subsume(clause_index: usize, ctx: &mut SATContext) {
     // verbose!(clause, 1, "backward_subsume start");
 
+    let min_lit = ctx.formula.clauses[clause_index]
+        .literals.iter()
+        .map(|l| ctx.formula.literal_matrix.get(l).map(|cls| (l, cls.len())))
+        .min_by(|lit1, lit2|
+            match (lit1, lit2) {
+                (Some((_, len1)), Some((_, len2))) => len1.cmp(&len2),
+                (Some(_), None) => std::cmp::Ordering::Greater,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => std::cmp::Ordering::Equal,
+            }
+        )
+        .flatten()
+        .map(|l| l.0);
 
+    let lit_set: HashSet<i32, RandomState> = HashSet::from_iter(
+        ctx.formula.clauses[clause_index].literals.iter().map(|l| *l)
+    );
+
+    if let Some(min_lit,) = min_lit {
+        for clause_mb_subsumed_index in ctx.formula.literal_matrix[min_lit].iter() {
+            ctx.stats.checked += 1;
+    
+            let clause_mb_subsumed = &mut ctx.formula.clauses[*clause_mb_subsumed_index];
+    
+            let subsumed = clause_mb_subsumed.literals
+                .iter()
+                .all(|lit| lit_set.contains(lit));
+            
+            if subsumed {
+                clause_mb_subsumed.garbage = true;
+                ctx.stats.subsumed += 1;
+            }
+        }
+    }
 
     // verbose!(clause, 1, "backward_subsume end");
 }
@@ -450,12 +519,16 @@ fn backward_subsumption(ctx: &mut SATContext) {
     ctx.formula.clauses.sort_by(|clause1, clause2| {
         clause1.literals.cmp(&clause2.literals)
     });
-    for clause in ctx.formula.clauses.iter_mut() {
-        backward_subsume(clause);
-        // TODO: connect
+    for clause_index in 0..ctx.formula.clauses.len() {
+        backward_subsume(clause_index, ctx);
+        ctx.formula.literal_matrix.connect(&mut ctx.formula.clauses[clause_index]);
     }
 
-    // TODO: Remove garbage clauses
+    let clauses = replace(&mut ctx.formula.clauses, Vec::new());
+
+    ctx.formula.clauses = clauses.into_iter()
+        .filter(|clause| !clause.garbage)
+        .collect();
 
     verbose!(ctx, 1, "backward_subsumption complete");
 }
@@ -463,7 +536,7 @@ fn backward_subsumption(ctx: &mut SATContext) {
 fn simplify(ctx: &mut SATContext) {
     verbose!(ctx, 1, "starting to simplify formula");
 
-    // TODO: Empty clause check
+    // TODO: Move empty check here after refactor
     backward_subsumption(ctx);
 
     verbose!(ctx, 1, "simplification complete");
