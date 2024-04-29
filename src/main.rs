@@ -2,23 +2,40 @@ use clap::{Arg, ArgAction, Command};
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::hash::RandomState;
-use std::io::{self, BufRead, BufReader, BufWriter, Read, Write};
+use std::io::{self, BufWriter, Write};
 use std::mem::replace;
 use std::ops::{Deref, DerefMut};
 use std::process;
 use std::time::Instant;
 
+mod parser;
+mod utils;
+mod stats;
+
+use stats::Stats;
+
+use crate::parser::{parse, CNFLine};
+
+macro_rules! parse_error {
+    ($ctx:expr, $msg:expr, $line:expr) => {{
+        eprintln!(
+            "babysub: parse error: at line {} in '{}': {}",
+            $line, $ctx.config.input_path, $msg
+        );
+        process::exit(1);
+    }};
+}
+
 macro_rules! die {
     ($($arg:tt)*) => {{
         eprintln!("babysub: error: {}", format!($($arg)*));
-        process::exit(1);
+        std::process::exit(1);
     }}
 }
 
 macro_rules! message {
     ($ctx:expr, $($arg:tt)*) => {{
         if $ctx.config.verbosity >= 0 {
-            use std::io::Write;
             if let Err(e) = writeln!($ctx.writer, "{}", format!("c {}", format_args!($($arg)*))) {
                 die!("Failed to write message: {}", e);
             }
@@ -55,37 +72,6 @@ macro_rules! verbose {
     }}
 }
 
-macro_rules! parse_error {
-    ($ctx:expr, $msg:expr, $line:expr) => {{
-        eprintln!(
-            "babysub: parse error: at line {} in '{}': {}",
-            $line, $ctx.config.input_path, $msg
-        );
-        process::exit(1);
-    }};
-}
-
-macro_rules! parse_warning {
-    ($ctx:expr, $msg:expr, $line:expr) => {{
-        eprintln!(
-            "babysub: parse warning: at line {} in '{}': {}",
-            $line, $ctx.config.input_path, $msg
-        );
-    }};
-}
-
-#[cfg(feature = "logging")]
-macro_rules! LOG {
-    ($($arg:tt)*) => {{
-        println!("c LOG {}", format_args!($($arg)*));
-    }};
-}
-
-#[cfg(not(feature = "logging"))]
-macro_rules! LOG {
-    ($($arg:tt)*) => {{}};
-}
-
 struct Config {
     input_path: String,
     output_path: String,
@@ -103,13 +89,6 @@ fn average(a: usize, b: usize) -> f64 {
 
 fn percent(a: usize, b: usize) -> f64 {
     100.0 * average(a, b)
-}
-
-struct Stats {
-    checked: usize,
-    parsed: usize,
-    subsumed: usize,
-    start_time: Instant,
 }
 
 // TODO: The data structures right now are inefficient and need to be optimized. I will work on
@@ -304,84 +283,6 @@ fn trivial_clause(literals: Vec<i32>) -> Option<Vec<i32>> {
     }
 }
 
-// TODO: Refactor this function so that it returns the parsed items as an iterator rather than modifying the formula
-fn parse_cnf(input_path: String, ctx: &mut SATContext) -> io::Result<()> {
-    let input: Box<dyn Read> = if input_path == "<stdin>" {
-        message!(ctx, "reading from '<stdin>'");
-        Box::new(io::stdin())
-    } else {
-        message!(ctx, "reading from '{}'", input_path);
-        Box::new(File::open(&input_path)?)
-    };
-
-    let reader = BufReader::new(input);
-    let mut header_parsed = false;
-    let mut clauses_count = 0;
-    let mut line_number = 0;
-
-    for line in reader.lines() {
-        line_number += 1;
-        let line = line?;
-        if line.starts_with('c') {
-            continue; // Skip comment lines
-        }
-        if line.starts_with("p cnf") {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() < 4 {
-                parse_error!(ctx, "Invalid header format.", line_number);
-            }
-            ctx.formula.variables = parts[2].parse().unwrap_or_else(|_| {
-                parse_error!(ctx, "Could not read number of variables.", line_number);
-            });
-            clauses_count = parts[3].parse().unwrap_or_else(|_| {
-                parse_error!(ctx, "Could not read number of clauses.", line_number);
-            });
-            header_parsed = true;
-            message!(
-                ctx,
-                "parsed 'p cnf {} {}' header",
-                ctx.formula.variables,
-                clauses_count
-            );
-        } else if header_parsed {
-            let clause: Vec<i32> = line
-                .split_whitespace()
-                .map(|num| {
-                    num.parse().unwrap_or_else(|_| {
-                        parse_error!(ctx, "Invalid literal format.", line_number);
-                    })
-                })
-                .filter(|&x| x != 0)
-                .collect();
-            LOG!("parsed clause: {:?}", clause);
-            if let Some(literals) = trivial_clause(clause) {
-                if literals.is_empty() {
-                    ctx.formula.reset();
-                    ctx.formula.clauses.push(Clause::new(0, literals));
-                    break;
-                } else {
-                    ctx.formula.add_clause(literals);
-                }
-            }
-            ctx.stats.parsed += 1;
-        } else {
-            parse_error!(ctx, "CNF header not found.", line_number);
-        }
-    }
-    if clauses_count != ctx.stats.parsed {
-        parse_warning!(
-            ctx,
-            format!(
-                "Mismatch in declared and parsed clauses: expected {}, got {}",
-                clauses_count, ctx.stats.parsed
-            ),
-            line_number
-        );
-    }
-    verbose!(ctx, 1, "parsed {} clauses", ctx.stats.parsed);
-    Ok(())
-}
-
 fn print(ctx: &mut SATContext) {
     verbose!(ctx, 1, "writing to '{}'", ctx.config.output_path);
     if ctx.config.sign {
@@ -408,8 +309,6 @@ fn print(ctx: &mut SATContext) {
 }
 
 fn backward_subsume(clause_index: usize, ctx: &mut SATContext) {
-    // verbose!(clause, 1, "backward_subsume start");
-
     let min_lit = ctx.formula.clauses[clause_index]
         .literals.iter()
         .map(|l| ctx.formula.literal_matrix.get(l).map(|cls| (l, cls.len())))
@@ -417,7 +316,7 @@ fn backward_subsume(clause_index: usize, ctx: &mut SATContext) {
             match (lit1, lit2) {
                 (Some((_, len1)), Some((_, len2))) => len1.cmp(&len2),
                 (Some(_), None) => std::cmp::Ordering::Greater,
-                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, Some(_)) => std::cmp::Ordering::Less,
                 (None, None) => std::cmp::Ordering::Equal,
             }
         )
@@ -444,8 +343,6 @@ fn backward_subsume(clause_index: usize, ctx: &mut SATContext) {
             }
         }
     }
-
-    // verbose!(clause, 1, "backward_subsume end");
 }
 
 fn backward_subsumption(ctx: &mut SATContext) {
@@ -537,14 +434,44 @@ fn main() {
         verbosity,
         sign: matches.is_present("sign"),
     };
-
+ 
     let mut ctx = SATContext::new(config);
     message!(&mut ctx, "BabySub Subsumption Preprocessor");
 
-    if let Err(e) = parse_cnf(ctx.config.input_path.clone(), &mut ctx) {
-        die!("Failed to parse CNF: {}", e);
-    }
+    let input_path = matches.value_of("input").unwrap_or("<stdin>").to_string();
+    let lines = parse(input_path);
 
+    // Some only if header is parsed
+    let mut clauses_count: Option<usize> = None;
+    for (line_number, line) in lines.enumerate() {
+        match line {
+            CNFLine::Comment => (),
+            CNFLine::Header { n_vars, n_clauses } => {
+                ctx.formula.variables = n_vars;
+                clauses_count = Some(n_clauses);
+                LOG!("parsed 'p cnf {} {}' header",
+                    n_vars, n_clauses,
+                )
+            }
+            CNFLine::ClauseLine { literals } => {
+                match clauses_count.is_some() {
+                    true => {
+                        if let Some(literals) = trivial_clause(literals) {
+                            if literals.is_empty() {
+                                ctx.formula.reset();
+                                ctx.formula.clauses.push(Clause::new(0, literals));
+                                break;
+                            } else {
+                                ctx.formula.add_clause(literals);
+                            }
+                        }
+                    }
+                    false => parse_error!(ctx, "CNF header not found.", line_number)
+                }
+            }
+        }
+    }
+    
     simplify(&mut ctx);
 
     print(&mut ctx);
