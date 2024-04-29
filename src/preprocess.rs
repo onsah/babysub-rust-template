@@ -1,6 +1,98 @@
-use std::{collections::HashSet, hash::RandomState, mem::take};
+use std::{collections::{HashMap, HashSet}, hash::RandomState, mem::take, ops::{Deref, DerefMut}};
 
-use crate::{parser::CNFLine, Clause, PrintContext, SATContext};
+use crate::{parser::CNFLine, PrintContext, SATContext};
+
+// TODO: The data structures right now are inefficient and need to be optimized. I will work on
+// this in the next few days. - Bernhard
+
+#[derive(Clone)]
+pub struct Clause {
+    pub id: usize,
+    pub literals: Vec<i32>,
+    pub garbage: bool,
+}
+
+impl Clause {
+    fn new(id: usize, literals: Vec<i32>) -> Clause {
+        Clause {
+            id,
+            literals,
+            garbage: false,
+        }
+    }
+}
+
+pub struct LiteralMatrix(HashMap<i32, Vec<usize>>);
+
+impl LiteralMatrix {
+    fn new() -> LiteralMatrix { LiteralMatrix(HashMap::new()) }
+
+    fn connect(&mut self, clause: &Clause) {
+        LOG!(
+            "adding clause id: {} to literal matrix for literals: {:?}",
+            clause_id,
+            new_clause.literals
+        );
+        for &literal in &clause.literals {
+            self.0
+                .entry(literal)
+                .or_insert_with(Vec::new)
+                .push(clause.id);
+        }
+    }
+}
+
+impl Deref for LiteralMatrix {
+    type Target = HashMap<i32, Vec<usize>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl DerefMut for LiteralMatrix {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+pub struct CNFFormula {
+    pub variables: usize,
+    pub added_clauses: usize,
+    pub clauses: Vec<Clause>,
+    pub literal_matrix: LiteralMatrix,
+}
+
+impl CNFFormula {
+    pub fn new() -> CNFFormula {
+        CNFFormula {
+            variables: 0,
+            added_clauses: 0,
+            clauses: Vec::new(),
+            literal_matrix: LiteralMatrix::new(),
+        }
+    }
+
+    fn add_clause(&mut self, clause: Vec<i32>) {
+        let clause_id = self.added_clauses;
+        self.added_clauses += 1;
+
+        let clause = Clause::new(clause_id, clause);
+    
+        LOG!(
+            "adding clause: {:?} with id: {}",
+            new_clause.literals,
+            new_clause.id
+        );
+        self.clauses.push(clause);
+    }
+
+    fn reset(&mut self) {
+        self.clauses.clear();
+        self.literal_matrix.clear();
+        self.added_clauses = 0;
+    }
+}
 
 pub fn preprocess(lines: Box<dyn Iterator<Item = CNFLine>>, ctx: &mut SATContext, ptx: &mut PrintContext) {
     message!(ptx, "BabySub Subsumption Preprocessor");
