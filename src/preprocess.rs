@@ -1,4 +1,4 @@
-use std::{collections::{HashMap, HashSet}, hash::RandomState, mem::take, ops::{Deref, DerefMut}};
+use std::{collections::{HashMap, HashSet}, hash::RandomState, ops::{Deref, DerefMut}};
 
 use crate::{parser::CNFLine, PrintContext, SATContext};
 
@@ -7,18 +7,18 @@ use crate::{parser::CNFLine, PrintContext, SATContext};
 
 #[derive(Clone)]
 pub struct Clause {
-    pub id: usize,
     pub literals: Vec<i32>,
-    pub garbage: bool,
 }
 
 impl Clause {
-    fn new(id: usize, literals: Vec<i32>) -> Clause {
+    fn new(literals: Vec<i32>) -> Clause {
         Clause {
-            id,
             literals,
-            garbage: false,
         }
+    }
+
+    fn empty() -> Clause {
+        Clause::new(Vec::new())
     }
 }
 
@@ -27,17 +27,17 @@ pub struct LiteralMatrix(HashMap<i32, Vec<usize>>);
 impl LiteralMatrix {
     fn new() -> LiteralMatrix { LiteralMatrix(HashMap::new()) }
 
-    fn connect(&mut self, clause: &Clause) {
+    fn connect(&mut self, clause: &Clause, clause_index: usize) {
         LOG!(
             "adding clause id: {} to literal matrix for literals: {:?}",
-            clause_id,
-            new_clause.literals
+            clause.id,
+            clause.literals
         );
         for &literal in &clause.literals {
             self.0
                 .entry(literal)
                 .or_insert_with(Vec::new)
-                .push(clause.id);
+                .push(clause_index);
         }
     }
 }
@@ -59,7 +59,7 @@ impl DerefMut for LiteralMatrix {
 pub struct CNFFormula {
     pub variables: usize,
     pub added_clauses: usize,
-    pub clauses: Vec<Clause>,
+    pub clauses: Vec<Option<Clause>>,
     pub literal_matrix: LiteralMatrix,
 }
 
@@ -73,18 +73,17 @@ impl CNFFormula {
         }
     }
 
-    fn add_clause(&mut self, clause: Vec<i32>) {
-        let clause_id = self.added_clauses;
+    fn add_clause(&mut self, literals: Vec<i32>) {
         self.added_clauses += 1;
 
-        let clause = Clause::new(clause_id, clause);
+        let clause = Clause::new(literals);
     
         LOG!(
             "adding clause: {:?} with id: {}",
-            new_clause.literals,
-            new_clause.id
+            clause.literals,
+            clause.id
         );
-        self.clauses.push(clause);
+        self.clauses.push(Some(clause));
     }
 
     fn reset(&mut self) {
@@ -113,7 +112,7 @@ pub fn preprocess(lines: Box<dyn Iterator<Item = CNFLine>>, ctx: &mut SATContext
                         if let Some(literals) = trivial_clause(literals) {
                             if literals.is_empty() {
                                 ctx.formula.reset();
-                                ctx.formula.clauses.push(Clause::new(0, literals));
+                                ctx.formula.clauses.push(Some(Clause::empty()));
                                 break;
                             } else {
                                 ctx.formula.add_clause(literals);
@@ -130,37 +129,43 @@ pub fn preprocess(lines: Box<dyn Iterator<Item = CNFLine>>, ctx: &mut SATContext
 }
 
 fn backward_subsume(clause_index: usize, ctx: &mut SATContext) {
-    let min_lit = ctx.formula.clauses[clause_index]
-        .literals.iter()
-        .map(|l| ctx.formula.literal_matrix.get(l).map(|cls| (l, cls.len())))
-        .min_by(|lit1, lit2|
-            match (lit1, lit2) {
-                (Some((_, len1)), Some((_, len2))) => len1.cmp(&len2),
-                (Some(_), None) => std::cmp::Ordering::Greater,
-                (None, Some(_)) => std::cmp::Ordering::Less,
-                (None, None) => std::cmp::Ordering::Equal,
-            }
-        )
-        .flatten()
-        .map(|l| l.0);
-
-    let lit_set: HashSet<i32, RandomState> = HashSet::from_iter(
-        ctx.formula.clauses[clause_index].literals.iter().map(|l| *l)
-    );
-
-    if let Some(min_lit,) = min_lit {
-        for clause_mb_subsumed_id in ctx.formula.literal_matrix[min_lit].iter() {
-            ctx.stats.checked += 1;
+    if let Some(clause) = &ctx.formula.clauses[clause_index] {
+        let clause = clause.clone();
+        // Literal that is contained in least number of clauses.
+        let min_lit = clause
+            .literals.iter()
+            .map(|l| ctx.formula.literal_matrix.get(l).map(|cls| (l, cls.len())))
+            .min_by(|lit1, lit2|
+                match (lit1, lit2) {
+                    (Some((_, len1)), Some((_, len2))) => len1.cmp(&len2),
+                    (Some(_), None) => std::cmp::Ordering::Greater,
+                    (None, Some(_)) => std::cmp::Ordering::Less,
+                    (None, None) => std::cmp::Ordering::Equal,
+                }
+            )
+            .flatten()
+            .map(|l| l.0);
     
-            let clause_mb_subsumed = &mut ctx.formula.clauses[*clause_mb_subsumed_id];
+        let lit_set: HashSet<i32, RandomState> = HashSet::from_iter(
+            clause.literals.iter().map(|l| *l)
+        );
     
-            let subsumed = clause_mb_subsumed.literals
-                .iter()
-                .all(|lit| lit_set.contains(lit));
-            
-            if subsumed {
-                clause_mb_subsumed.garbage = true;
-                ctx.stats.subsumed += 1;
+        if let Some(min_lit,) = min_lit {
+            for clause_mb_subsumed_id in ctx.formula.literal_matrix[min_lit].iter() {
+                ctx.stats.checked += 1;
+        
+                let clause_mb_subsumed_opt = &mut ctx.formula.clauses[*clause_mb_subsumed_id];
+                if let Some(clause_mb_subsumed) = clause_mb_subsumed_opt {
+                    // TODO: Use linear check to improve
+                    let subsumed = clause_mb_subsumed.literals
+                        .iter()
+                        .all(|lit| lit_set.contains(lit));
+                    
+                    if subsumed {
+                        *clause_mb_subsumed_opt = None;
+                        ctx.stats.subsumed += 1;
+                    }
+                }        
             }
         }
     }
@@ -170,20 +175,17 @@ fn backward_subsumption(ctx: &mut SATContext, ptx: &mut PrintContext) {
     verbose!(ptx, 1, "backward_subsumption start");
 
     ctx.formula.clauses.sort_by(|clause1, clause2| {
-        clause1.literals.cmp(&clause2.literals)
+        // Since we didn't remove any clause yet, we can safely unwrap.
+        clause1.as_ref().unwrap().literals.cmp(&clause2.as_ref().unwrap().literals)
     });
     for clause_index in 0..ctx.formula.clauses.len() {
+        verbose!(ptx, 1, "processing clause {}", clause_index);
         backward_subsume(clause_index, ctx);
-        ctx.formula.literal_matrix.connect(&mut ctx.formula.clauses[clause_index]);
+        // TODO: move literal matrix to the beginning of the for loop. 
+        ctx.formula.literal_matrix.connect(ctx.formula.clauses[clause_index].as_mut().unwrap(), clause_index);
     }
 
-    let clauses = take(&mut ctx.formula.clauses);
-
-    // Idea: Can just mark and not really remove from vec.
-    // Delete marked clauses
-    ctx.formula.clauses = clauses.into_iter()
-        .filter(|clause| !clause.garbage)
-        .collect();
+    // let clauses = take(&mut ctx.formula.clauses);
 
     verbose!(ptx, 1, "backward_subsumption complete");
 }

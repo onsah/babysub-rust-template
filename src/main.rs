@@ -138,7 +138,7 @@ fn compute_signature(ctx: &mut SATContext, ptx: &mut PrintContext) -> u64 {
     ];
     let mut hash: u64 = 0;
 
-    for clause in &ctx.formula.clauses {
+    for clause in ctx.formula.clauses.iter().filter_map(|x| x.as_ref()) {
         let mut d: Vec<u32> = clause.literals.iter().map(|&lit| lit as u32).collect();
         d.sort_unstable();
         let mut tmp = (d.len() as u64 + 1).wrapping_mul(nonces[0]);
@@ -170,7 +170,7 @@ fn print(ctx: &mut SATContext, ptx: &mut PrintContext) {
         ctx.formula.variables,
         ctx.formula.clauses.len()
     );
-    for clause in &ctx.formula.clauses {
+    for clause in ctx.formula.clauses.iter().filter_map(|x| x.as_ref()) {
         let clause_string = clause
             .literals
             .iter()
