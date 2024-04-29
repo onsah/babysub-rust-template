@@ -13,9 +13,7 @@ pub fn preprocess(lines: Box<dyn Iterator<Item = CNFLine>>, ctx: &mut SATContext
             CNFLine::Header { n_vars, n_clauses } => {
                 ctx.formula.variables = n_vars;
                 clauses_count = Some(n_clauses);
-                LOG!("parsed 'p cnf {} {}' header",
-                n_vars, n_clauses,
-            )
+                LOG!("parsed 'p cnf {} {}' header", n_vars, n_clauses);
             }
             CNFLine::ClauseLine { literals } => {
                 match clauses_count.is_some() {
@@ -89,6 +87,8 @@ fn backward_subsumption(ctx: &mut SATContext, ptx: &mut PrintContext) {
 
     let clauses = take(&mut ctx.formula.clauses);
 
+    // Idea: Can just mark and not really remove from vec.
+    // Delete marked clauses
     ctx.formula.clauses = clauses.into_iter()
         .filter(|clause| !clause.garbage)
         .collect();
@@ -99,7 +99,6 @@ fn backward_subsumption(ctx: &mut SATContext, ptx: &mut PrintContext) {
 fn simplify(ctx: &mut SATContext, ptx: &mut PrintContext) {
     verbose!(ptx, 1, "starting to simplify formula");
 
-    // TODO: Move empty check here after refactor
     backward_subsumption(ctx, ptx);
 
     verbose!(ptx, 1, "simplification complete");
