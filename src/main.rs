@@ -15,6 +15,27 @@ use stats::Stats;
 use crate::parser::parse;
 use crate::preprocess::preprocess;
 
+fn main() {
+    let Args {
+        input_path,
+        output_path,
+        sign,
+        verbosity,
+    } = get_args();
+
+    let config = Config {
+        sign,
+    };
+
+    let mut ptx = PrintContext::new(verbosity, &output_path);
+    let mut ctx = SATContext::new(config);
+
+    let lines = parse(&input_path);
+    preprocess(lines, &mut ctx, &mut ptx);
+    print(&mut ctx, &mut ptx);
+    report_stats(&mut ctx, &mut ptx);
+}
+
 macro_rules! raw_message {
     ($ctx:expr, $($arg:tt)*) => {{
         if $ctx.verbosity >= 0 {
@@ -320,25 +341,4 @@ fn get_args() -> Args {
         sign: matches.is_present("sign"),
         verbosity,
     }
-}
-
-fn main() {
-    let Args {
-        input_path,
-        output_path,
-        sign,
-        verbosity,
-    } = get_args();
-
-    let config = Config {
-        sign,
-    };
-
-    let mut ptx = PrintContext::new(verbosity, &output_path);
-    let mut ctx = SATContext::new(config);
-
-    let lines = parse(&input_path);
-    preprocess(lines, &mut ctx, &mut ptx);
-    print(&mut ctx, &mut ptx);
-    report_stats(&mut ctx, &mut ptx);
 }
