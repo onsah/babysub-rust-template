@@ -389,7 +389,53 @@ fn simplify(ctx: &mut SATContext, ptx: &mut PrintContext) {
     verbose!(ptx, 1, "simplification complete");
 }
 
-fn main() {
+fn preprocess(input_path: &str, ctx: &mut SATContext, ptx: &mut PrintContext) {
+    message!(ptx, "BabySub Subsumption Preprocessor");
+    
+    let lines = parse(&input_path);
+
+    // Some only if header is parsed
+    let mut clauses_count: Option<usize> = None;
+    for (line_number, line) in lines.enumerate() {
+        match line {
+            CNFLine::Comment => (),
+            CNFLine::Header { n_vars, n_clauses } => {
+                ctx.formula.variables = n_vars;
+                clauses_count = Some(n_clauses);
+                LOG!("parsed 'p cnf {} {}' header",
+                n_vars, n_clauses,
+            )
+            }
+            CNFLine::ClauseLine { literals } => {
+                match clauses_count.is_some() {
+                    true => {
+                        if let Some(literals) = trivial_clause(literals) {
+                            if literals.is_empty() {
+                                ctx.formula.reset();
+                                ctx.formula.clauses.push(Clause::new(0, literals));
+                                break;
+                            } else {
+                                ctx.formula.add_clause(literals);
+                            }
+                        }
+                    }
+                    false => parse_error!(ptx, input_path, "CNF header not found.", line_number)
+                }
+            }
+        }
+    }
+    
+    simplify(ctx, ptx);
+}
+
+struct Args {
+    verbosity: i32,
+    sign: bool,
+    output_path: String,
+    input_path: String,
+}
+
+fn get_args() -> Args {
     let app = Command::new("BabySub")
         .version("1.0")
         .author("Bernhard Gstrein")
@@ -443,53 +489,30 @@ fn main() {
         *matches.get_one::<u8>("verbosity").unwrap_or(&0) as i32
     };
 
-    let config = Config {
+    Args {
+        input_path: matches.value_of("input").unwrap_or("<stdin>").to_string(),
+        output_path: matches.value_of("output").unwrap_or("<stdout>").to_string(),
         sign: matches.is_present("sign"),
+        verbosity,
+    }
+}
+
+fn main() {
+    let Args {
+        input_path,
+        output_path,
+        sign,
+        verbosity,
+    } = get_args();
+
+    let config = Config {
+        sign,
     };
 
-    let output_path = matches.value_of("output").unwrap_or("<stdout>").to_string();
     let mut ptx = PrintContext::new(verbosity, &output_path);
-    
     let mut ctx = SATContext::new(config);
-    message!(&mut ptx, "BabySub Subsumption Preprocessor");
-    
-    let input_path = matches.value_of("input").unwrap_or("<stdin>").to_string();
-    let lines = parse(&input_path);
 
-    // Some only if header is parsed
-    let mut clauses_count: Option<usize> = None;
-    for (line_number, line) in lines.enumerate() {
-        match line {
-            CNFLine::Comment => (),
-            CNFLine::Header { n_vars, n_clauses } => {
-                ctx.formula.variables = n_vars;
-                clauses_count = Some(n_clauses);
-                LOG!("parsed 'p cnf {} {}' header",
-                n_vars, n_clauses,
-            )
-            }
-            CNFLine::ClauseLine { literals } => {
-                match clauses_count.is_some() {
-                    true => {
-                        if let Some(literals) = trivial_clause(literals) {
-                            if literals.is_empty() {
-                                ctx.formula.reset();
-                                ctx.formula.clauses.push(Clause::new(0, literals));
-                                break;
-                            } else {
-                                ctx.formula.add_clause(literals);
-                            }
-                        }
-                    }
-                    false => parse_error!(ptx, input_path, "CNF header not found.", line_number)
-                }
-            }
-        }
-    }
-    
-    simplify(&mut ctx, &mut ptx);
-    
-
+    preprocess(&input_path, &mut ctx, &mut ptx);
     print(&mut ctx, &mut ptx);
     report_stats(&mut ctx, &mut ptx);
 }
