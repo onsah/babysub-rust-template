@@ -17,10 +17,10 @@ use stats::Stats;
 use crate::parser::{parse, CNFLine};
 
 macro_rules! parse_error {
-    ($ctx:expr, $msg:expr, $line:expr) => {{
+    ($ctx:expr, $input_path: expr, $msg:expr, $line:expr) => {{
         eprintln!(
             "babysub: parse error: at line {} in '{}': {}",
-            $line, $ctx.config.input_path, $msg
+            $line, $input_path, $msg
         );
         process::exit(1);
     }};
@@ -35,7 +35,7 @@ macro_rules! die {
 
 macro_rules! message {
     ($ctx:expr, $($arg:tt)*) => {{
-        if $ctx.config.verbosity >= 0 {
+        if $ctx.verbosity >= 0 {
             if let Err(e) = writeln!($ctx.writer, "{}", format!("c {}", format_args!($($arg)*))) {
                 die!("Failed to write message: {}", e);
             }
@@ -47,7 +47,7 @@ macro_rules! message {
 
 macro_rules! raw_message {
     ($ctx:expr, $($arg:tt)*) => {{
-        if $ctx.config.verbosity >= 0 {
+        if $ctx.verbosity >= 0 {
             use std::io::Write;
             if let Err(e) = writeln!($ctx.writer, "{}", format_args!($($arg)*)) {
                 die!("Failed to write message: {}", e);
@@ -61,7 +61,7 @@ macro_rules! raw_message {
 
 macro_rules! verbose {
     ($ctx:expr, $level:expr, $($arg:tt)*) => {{
-        if $ctx.config.verbosity == $level {
+        if $ctx.verbosity == $level {
             use std::io::Write;
             if let Err(e) = writeln!($ctx.writer, "{}", format!("c {}", format_args!($($arg)*))) {
                 die!("Failed to write message: {}", e);
@@ -73,9 +73,6 @@ macro_rules! verbose {
 }
 
 struct Config {
-    input_path: String,
-    output_path: String,
-    verbosity: i32,
     sign: bool,
 }
 
@@ -183,24 +180,42 @@ impl CNFFormula {
     }
 }
 
+struct PrintContext {
+    writer: BufWriter<Box<dyn Write>>,
+    verbosity: i32,
+}
+
+impl PrintContext {
+
+    fn new(verbosity: i32, output_path: &str) -> PrintContext {
+        let output: Box<dyn Write> = match output_path {
+            "<stdout>" => Box::new(io::stdout()),
+            path => Box::new(File::create(path).expect("Failed to create output file")),
+        };
+        let writer: BufWriter<Box<dyn Write>> = BufWriter::new(output);
+        
+        let mut ptx = PrintContext {
+            writer,
+            verbosity,
+        };
+        
+        verbose!(ptx, 1, "writing to '{}'", output_path);
+        ptx
+    }
+
+}
+
 struct SATContext {
     config: Config,
     formula: CNFFormula,
-    writer: BufWriter<Box<dyn Write>>,
     stats: Stats,
 }
 
 impl SATContext {
     fn new(config: Config) -> Self {
-        let output: Box<dyn Write> = match config.output_path.as_str() {
-            "<stdout>" => Box::new(io::stdout()),
-            path => Box::new(File::create(path).expect("Failed to create output file")),
-        };
-
         SATContext {
             config,
             formula: CNFFormula::new(),
-            writer: BufWriter::new(output),
             stats: Stats {
                 checked: 0,
                 parsed: 0,
@@ -211,27 +226,27 @@ impl SATContext {
     }
 }
 
-fn report_stats(ctx: &mut SATContext) {
+fn report_stats(ctx: &mut SATContext, ptx: &mut PrintContext) {
     let elapsed_time = ctx.stats.start_time.elapsed().as_secs_f64();
     message!(
-        ctx,
+        ptx,
         "{:<20} {:>10}    clauses {:.2} per subsumed",
         "checked:",
         ctx.stats.checked,
         average(ctx.stats.subsumed, ctx.stats.subsumed)
     );
     message!(
-        ctx,
+        ptx,
         "{:<20} {:>10}    clauses {:.0}%",
         "subsumed:",
         ctx.stats.subsumed,
         percent(ctx.stats.subsumed, ctx.stats.parsed)
     );
-    message!(ctx, "{:<20} {:13.2} seconds", "process-time:", elapsed_time);
+    message!(ptx, "{:<20} {:13.2} seconds", "process-time:", elapsed_time);
 }
 
-fn compute_signature(ctx: &mut SATContext) -> u64 {
-    verbose!(ctx, 1, "computing hash-signature");
+fn compute_signature(ctx: &mut SATContext, ptx: &mut PrintContext) -> u64 {
+    verbose!(ptx, 1, "computing hash-signature");
     let nonces = [
         71876167, 708592741, 1483128881, 907283241, 442951013, 537146759, 1366999021, 1854614941,
         647800535, 53523743, 783815875, 1643643143, 682599717, 291474505, 229233697, 1633529763,
@@ -283,15 +298,15 @@ fn trivial_clause(literals: Vec<i32>) -> Option<Vec<i32>> {
     }
 }
 
-fn print(ctx: &mut SATContext) {
-    verbose!(ctx, 1, "writing to '{}'", ctx.config.output_path);
+fn print(ctx: &mut SATContext, ptx: &mut PrintContext) {
+    
     if ctx.config.sign {
-        let signature = compute_signature(ctx);
-        message!(ctx, "hash-signature: {}", signature);
+        let signature = compute_signature(ctx, ptx);
+        message!(ptx, "hash-signature: {}", signature);
     }
 
     raw_message!(
-        ctx,
+        ptx,
         "p cnf {} {}",
         ctx.formula.variables,
         ctx.formula.clauses.len()
@@ -304,7 +319,7 @@ fn print(ctx: &mut SATContext) {
             .collect::<Vec<String>>()
             .join(" ")
             + " 0";
-        raw_message!(ctx, "{}", clause_string);
+        raw_message!(ptx, "{}", clause_string);
     }
 }
 
@@ -345,8 +360,8 @@ fn backward_subsume(clause_index: usize, ctx: &mut SATContext) {
     }
 }
 
-fn backward_subsumption(ctx: &mut SATContext) {
-    verbose!(ctx, 1, "backward_subsumption start");
+fn backward_subsumption(ctx: &mut SATContext, ptx: &mut PrintContext) {
+    verbose!(ptx, 1, "backward_subsumption start");
 
     ctx.formula.clauses.sort_by(|clause1, clause2| {
         clause1.literals.cmp(&clause2.literals)
@@ -362,16 +377,16 @@ fn backward_subsumption(ctx: &mut SATContext) {
         .filter(|clause| !clause.garbage)
         .collect();
 
-    verbose!(ctx, 1, "backward_subsumption complete");
+    verbose!(ptx, 1, "backward_subsumption complete");
 }
 
-fn simplify(ctx: &mut SATContext) {
-    verbose!(ctx, 1, "starting to simplify formula");
+fn simplify(ctx: &mut SATContext, ptx: &mut PrintContext) {
+    verbose!(ptx, 1, "starting to simplify formula");
 
     // TODO: Move empty check here after refactor
-    backward_subsumption(ctx);
+    backward_subsumption(ctx, ptx);
 
-    verbose!(ctx, 1, "simplification complete");
+    verbose!(ptx, 1, "simplification complete");
 }
 
 fn main() {
@@ -429,17 +444,17 @@ fn main() {
     };
 
     let config = Config {
-        input_path: matches.value_of("input").unwrap_or("<stdin>").to_string(),
-        output_path: matches.value_of("output").unwrap_or("<stdout>").to_string(),
-        verbosity,
         sign: matches.is_present("sign"),
     };
- 
-    let mut ctx = SATContext::new(config);
-    message!(&mut ctx, "BabySub Subsumption Preprocessor");
 
+    let output_path = matches.value_of("output").unwrap_or("<stdout>").to_string();
+    let mut ptx = PrintContext::new(verbosity, &output_path);
+    
+    let mut ctx = SATContext::new(config);
+    message!(&mut ptx, "BabySub Subsumption Preprocessor");
+    
     let input_path = matches.value_of("input").unwrap_or("<stdin>").to_string();
-    let lines = parse(input_path);
+    let lines = parse(&input_path);
 
     // Some only if header is parsed
     let mut clauses_count: Option<usize> = None;
@@ -450,8 +465,8 @@ fn main() {
                 ctx.formula.variables = n_vars;
                 clauses_count = Some(n_clauses);
                 LOG!("parsed 'p cnf {} {}' header",
-                    n_vars, n_clauses,
-                )
+                n_vars, n_clauses,
+            )
             }
             CNFLine::ClauseLine { literals } => {
                 match clauses_count.is_some() {
@@ -466,14 +481,15 @@ fn main() {
                             }
                         }
                     }
-                    false => parse_error!(ctx, "CNF header not found.", line_number)
+                    false => parse_error!(ptx, input_path, "CNF header not found.", line_number)
                 }
             }
         }
     }
     
-    simplify(&mut ctx);
+    simplify(&mut ctx, &mut ptx);
+    
 
-    print(&mut ctx);
-    report_stats(&mut ctx);
+    print(&mut ctx, &mut ptx);
+    report_stats(&mut ctx, &mut ptx);
 }

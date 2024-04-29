@@ -11,7 +11,7 @@ pub enum CNFLine {
     Comment,
 }
 
-pub fn parse(input_path: String) -> Box<dyn Iterator<Item = CNFLine>> {
+pub fn parse(input_path: &str) -> Box<dyn Iterator<Item = CNFLine>> {
     let input: Box<dyn Read> = if input_path == "<stdin>" {
         LOG!("reading from '<stdin>'");
         Box::new(io::stdin())
@@ -78,7 +78,7 @@ mod tests {
     fn test_parser_binbin1() {
         let input_path = Path::new("tests/test_cases/binbin1.cnf");
 
-        let lines = parse(input_path.to_str().unwrap().into());   
+        let lines = parse(input_path.to_str().unwrap());   
 
         assert_eq!(lines.collect::<Vec<CNFLine>>(), vec![
             CNFLine::Header { n_vars: 2, n_clauses: 2 },
