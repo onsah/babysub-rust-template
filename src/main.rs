@@ -391,6 +391,9 @@ fn parse_cnf(input_path: String, ctx: &mut SATContext) -> io::Result<()> {
                 .matrix
                 .init(ctx.formula.variables, ctx.config.verbosity);
         } else if header_parsed {
+            if line == "" {
+                continue;
+            } 
             let literals: Vec<i32> = line
                 .split_whitespace()
                 .map(|num| {
@@ -491,35 +494,42 @@ fn forward_subsumption(ctx: &mut SATContext) {
 }
 
 fn backward_subsume(ctx: &mut SATContext, clause_id: usize) {
-    let clause = &ctx.formula.clauses[clause_id];
+    let min_lit = {
+        let clause = &ctx.formula.clauses[clause_id];
 
-    ctx.formula.marks.fill(false);
-    for lit in clause.literals.iter() {
-        let marks_index = usize::try_from(lit + i32::try_from(ctx.formula.variables).unwrap()).unwrap();
-        ctx.formula.marks[marks_index] = true;
-    }
+        clause.literals.iter()
+            .min_by(|lit1, lit2| {
+                let lit1_clauses_n = ctx.formula.matrix[**lit1].len();
+                let lit2_clauses_n = ctx.formula.matrix[**lit2].len();
 
-    let min_lit = clause.literals.iter()
-        .min_by(|lit1, lit2| {
-            let lit1_clauses_n = ctx.formula.matrix[**lit1].len();
-            let lit2_clauses_n = ctx.formula.matrix[**lit2].len();
-
-            lit1_clauses_n.cmp(&lit2_clauses_n)
-        })
-        .map(|l| *l)
-        .unwrap();
+                lit1_clauses_n.cmp(&lit2_clauses_n)
+            })
+            .map(|l| *l)
+            .unwrap()
+    };
 
     for clause2_id in ctx.formula.matrix[min_lit].iter()
         .filter(|cl_id| **cl_id != clause_id) {
-        let clause2 = &mut ctx.formula.clauses[*clause2_id];
+        ctx.formula.marks.fill(false);
+
+        // TODO: Optimize check
+        {
+            let clause2 = &mut ctx.formula.clauses[*clause2_id];
+            for lit in clause2.literals.iter() {
+                let marks_index = usize::try_from(lit + i32::try_from(ctx.formula.variables).unwrap()).unwrap();
+                ctx.formula.marks[marks_index] = true;
+            }
+        }
 
         ctx.stats.checked += 1;
 
-        if clause2.literals.iter().all(|lit| {
+        let clause = &ctx.formula.clauses[clause_id];
+        if clause.literals.iter().all(|lit| {
             let marks_index = usize::try_from(lit + i32::try_from(ctx.formula.variables).unwrap()).unwrap();
             ctx.formula.marks[marks_index]
         }) {
             ctx.stats.subsumed += 1;
+            let clause2 = &mut ctx.formula.clauses[*clause2_id];
             clause2.garbage = true;
         }
     }
@@ -531,8 +541,10 @@ fn backward_subsumption(ctx: &mut SATContext) {
     ctx.formula.clauses.sort_by(|cl1, cl2| {
         cl1.literals.len()
             .cmp(&cl2.literals.len())
-            .reverse()
+            // .reverse()
     });
+
+    ctx.formula.clauses.reverse();
 
     for clause_id in 0..ctx.formula.clauses.len() {
         verbose!(ctx.config.verbosity, 1, 
