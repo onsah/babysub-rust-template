@@ -9,7 +9,7 @@ use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::ops::{Index, IndexMut};
 use std::path::Path;
-use std::process;
+use std::{mem, process};
 use std::time::Instant;
 use xz2::read::XzDecoder;
 use xz2::write::XzEncoder;
@@ -145,7 +145,7 @@ impl Matrix {
             variables
         );
         let size = 2 * variables;
-        self.matrix = vec![vec![0; size]; size];
+        self.matrix = vec![Vec::new(); size];
     }
 }
 
@@ -224,10 +224,10 @@ impl CNFFormula {
 
     fn collect_garbage_clauses(&mut self, _verbosity: i32) {
         let mut new_clauses = Vec::new();
-        // TODO: use mem::take
-        for clause in &self.clauses {
+        let old_clauses = mem::take(&mut self.clauses);
+        for clause in old_clauses {
             if !clause.garbage {
-                new_clauses.push(clause.clone());
+                new_clauses.push(clause);
             }
         }
         LOG!(
@@ -659,7 +659,14 @@ fn setup_context(config: Config) -> SATContext {
     ctx
 }
 
+#[cfg(feature = "dhat-heap")]
+#[global_allocator]
+static ALLOC: dhat::Alloc = dhat::Alloc;
+
 fn main() {
+    #[cfg(feature = "dhat-heap")]
+    let _profiler = dhat::Profiler::new_heap();
+
     let config = parse_arguments();
     let mut ctx = setup_context(config);
 

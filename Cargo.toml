@@ -10,6 +10,7 @@ clap = "*"
 xz2 = "*"
 flate2 = "*"
 bzip2 = "*"
+dhat = "0.3.3"
 
 [dev-dependencies]
 assert_cmd = "*"
@@ -17,3 +18,7 @@ predicates = "*"
 
 [features]
 logging = []
+dhat-heap = []    # if you are doing heap profiling
+
+[profile.release]
+debug = 1
