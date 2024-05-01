@@ -308,6 +308,28 @@ fn compute_signature(ctx: &mut SATContext) -> u64 {
     hash
 }
 
+fn trivial_clause(ctx: &mut SATContext, literals: Vec<i32>) -> Option<Vec<i32>> {
+    let mut result = Vec::new();
+
+    let marks = &mut ctx.formula.marks;
+    marks.fill(false);
+    
+    for lit in literals {
+        if marks[usize::try_from(-lit + i32::try_from(ctx.formula.variables).unwrap()).unwrap()] {
+            // Trivial clause
+            return None;
+        } else if marks[usize::try_from(lit + i32::try_from(ctx.formula.variables).unwrap()).unwrap()] {
+            // Redundant literal, do nothing
+        } else {
+            result.push(lit);
+            let index = usize::try_from(lit + i32::try_from(ctx.formula.variables).unwrap()).unwrap();
+            marks[index] = true;
+        }
+    }
+    
+    Some(result)
+}
+
 fn parse_cnf(input_path: String, ctx: &mut SATContext) -> io::Result<()> {
     let path = Path::new(&input_path);
     let input: Box<dyn Read> = if input_path == "<stdin>" {
@@ -360,6 +382,8 @@ fn parse_cnf(input_path: String, ctx: &mut SATContext) -> io::Result<()> {
                 ctx.formula.variables,
                 clauses_count
             );
+            // + 1 creates a redundant space but it makes indexing easier
+            ctx.formula.marks = vec![false; ctx.formula.variables * 2 + 1];
             ctx.formula
                 .matrix
                 .init(ctx.formula.variables, ctx.config.verbosity);
@@ -374,7 +398,15 @@ fn parse_cnf(input_path: String, ctx: &mut SATContext) -> io::Result<()> {
                 .filter(|&x| x != 0)
                 .collect();
             LOG!(ctx.config.verbosity, "parsed clause: {:?}", clause);
-            ctx.formula.add_clause(literals, ctx.config.verbosity);
+            if let Some(literals) = trivial_clause(ctx, literals) {
+                if !literals.is_empty() {
+                    ctx.formula.add_clause(literals, ctx.config.verbosity);
+                } else {
+                    ctx.formula.added_clauses = 1;
+                    ctx.formula.clauses.clear();
+                    ctx.formula.add_clause(literals, ctx.config.verbosity);
+                }
+            }
             ctx.stats.parsed += 1;
         } else {
             parse_error!(ctx, "CNF header not found.", line_number);
@@ -430,7 +462,7 @@ fn print(ctx: &mut SATContext) {
 
     if ctx.config.sign {
         let signature = compute_signature(ctx);
-        writeln!(output, "c signature: {}", signature).expect("Failed to write signature");
+        writeln!(output, "c hash-signature: {}", signature).expect("Failed to write signature");
     }
 
     for clause in &ctx.formula.clauses {
