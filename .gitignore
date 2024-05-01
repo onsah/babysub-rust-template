@@ -2,3 +2,4 @@ target
 *.out
 *.log
 *.err
+.direnv/
