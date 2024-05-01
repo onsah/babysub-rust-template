@@ -515,6 +515,9 @@ fn backward_subsume(ctx: &mut SATContext, clause_id: usize) {
         // TODO: Optimize check
         {
             let clause2 = &mut ctx.formula.clauses[*clause2_id];
+            if clause2.garbage {
+                continue;
+            }
             for lit in clause2.literals.iter() {
                 let marks_index = usize::try_from(lit + i32::try_from(ctx.formula.variables).unwrap()).unwrap();
                 ctx.formula.marks[marks_index] = true;
@@ -524,12 +527,15 @@ fn backward_subsume(ctx: &mut SATContext, clause_id: usize) {
         ctx.stats.checked += 1;
 
         let clause = &ctx.formula.clauses[clause_id];
-        if clause.literals.iter().all(|lit| {
-            let marks_index = usize::try_from(lit + i32::try_from(ctx.formula.variables).unwrap()).unwrap();
-            ctx.formula.marks[marks_index]
-        }) {
+        if clause.literals.iter()
+            .all(|lit| {
+                let marks_index = usize::try_from(lit + i32::try_from(ctx.formula.variables).unwrap()).unwrap();
+                ctx.formula.marks[marks_index]
+            }) 
+        {
             ctx.stats.subsumed += 1;
             let clause2 = &mut ctx.formula.clauses[*clause2_id];
+            verbose!(ctx.config.verbosity, 1, "subsumed {:?}", clause2.literals);
             clause2.garbage = true;
         }
     }
@@ -541,10 +547,8 @@ fn backward_subsumption(ctx: &mut SATContext) {
     ctx.formula.clauses.sort_by(|cl1, cl2| {
         cl1.literals.len()
             .cmp(&cl2.literals.len())
-            // .reverse()
+            .reverse()
     });
-
-    ctx.formula.clauses.reverse();
 
     for clause_id in 0..ctx.formula.clauses.len() {
         verbose!(ctx.config.verbosity, 1, 
