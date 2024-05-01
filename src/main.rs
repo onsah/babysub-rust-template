@@ -192,11 +192,11 @@ impl CNFFormula {
         }
     }
 
-    fn add_clause(&mut self, clause: Vec<i32>, _verbosity: i32) {
+    fn add_clause(&mut self, literals: Vec<i32>, _verbosity: i32) {
         LOG!(_verbosity, "adding clause: {:?}", clause);
         let new_clause = Clause {
             garbage: false,
-            literals: clause,
+            literals,
         };
         self.added_clauses += 1;
         self.clauses.push(new_clause);
@@ -364,7 +364,7 @@ fn parse_cnf(input_path: String, ctx: &mut SATContext) -> io::Result<()> {
                 .matrix
                 .init(ctx.formula.variables, ctx.config.verbosity);
         } else if header_parsed {
-            let clause: Vec<i32> = line
+            let literals: Vec<i32> = line
                 .split_whitespace()
                 .map(|num| {
                     num.parse().unwrap_or_else(|_| {
@@ -374,7 +374,7 @@ fn parse_cnf(input_path: String, ctx: &mut SATContext) -> io::Result<()> {
                 .filter(|&x| x != 0)
                 .collect();
             LOG!(ctx.config.verbosity, "parsed clause: {:?}", clause);
-            ctx.formula.add_clause(clause, ctx.config.verbosity);
+            ctx.formula.add_clause(literals, ctx.config.verbosity);
             ctx.stats.parsed += 1;
         } else {
             parse_error!(ctx, "CNF header not found.", line_number);
