@@ -67,7 +67,7 @@ macro_rules! parse_error {
 macro_rules! LOG {
     ($verbosity:expr, $($arg:tt)*) => {{
         use std::io::{self, Write};
-        if $verbosity >= 999 {
+        if $verbosity >= 2 {
             let stdout = io::stdout();
             let mut handle = stdout.lock();
             if let Err(e) = writeln!(handle, "{}", format!("c LOG {}", format_args!($($arg)*))) {
@@ -179,6 +179,7 @@ struct CNFFormula {
     clauses: Vec<Clause>,
     matrix: Matrix,
     marks: Vec<bool>,
+    empty_clause_occured: bool,
 }
 
 impl CNFFormula {
@@ -189,11 +190,12 @@ impl CNFFormula {
             clauses: Vec::new(),
             matrix: Matrix::new(),
             marks: Vec::new(),
+            empty_clause_occured: false,
         }
     }
 
     fn add_clause(&mut self, literals: Vec<i32>, _verbosity: i32) {
-        LOG!(_verbosity, "adding clause: {:?}", clause);
+        LOG!(_verbosity, "adding clause: {:?}", literals);
         let new_clause = Clause {
             garbage: false,
             literals,
@@ -222,6 +224,7 @@ impl CNFFormula {
 
     fn collect_garbage_clauses(&mut self, _verbosity: i32) {
         let mut new_clauses = Vec::new();
+        // TODO: use mem::take
         for clause in &self.clauses {
             if !clause.garbage {
                 new_clauses.push(clause.clone());
@@ -397,17 +400,19 @@ fn parse_cnf(input_path: String, ctx: &mut SATContext) -> io::Result<()> {
                 })
                 .filter(|&x| x != 0)
                 .collect();
-            LOG!(ctx.config.verbosity, "parsed clause: {:?}", clause);
+            LOG!(ctx.config.verbosity, "parsed clause: {:?}", literals);
+            ctx.stats.parsed += 1;
             if let Some(literals) = trivial_clause(ctx, literals) {
                 if !literals.is_empty() {
                     ctx.formula.add_clause(literals, ctx.config.verbosity);
                 } else {
+                    ctx.formula.empty_clause_occured = true;
                     ctx.formula.added_clauses = 1;
                     ctx.formula.clauses.clear();
                     ctx.formula.add_clause(literals, ctx.config.verbosity);
+                    break;
                 }
             }
-            ctx.stats.parsed += 1;
         } else {
             parse_error!(ctx, "CNF header not found.", line_number);
         }
@@ -485,19 +490,74 @@ fn forward_subsumption(ctx: &mut SATContext) {
     verbose!(ctx.config.verbosity, 1, "starting forward subsumption");
 }
 
+fn backward_subsume(ctx: &mut SATContext, clause_id: usize) {
+    let clause = &ctx.formula.clauses[clause_id];
+
+    ctx.formula.marks.fill(false);
+    for lit in clause.literals.iter() {
+        let marks_index = usize::try_from(lit + i32::try_from(ctx.formula.variables).unwrap()).unwrap();
+        ctx.formula.marks[marks_index] = true;
+    }
+
+    let min_lit = clause.literals.iter()
+        .min_by(|lit1, lit2| {
+            let lit1_clauses_n = ctx.formula.matrix[**lit1].len();
+            let lit2_clauses_n = ctx.formula.matrix[**lit2].len();
+
+            lit1_clauses_n.cmp(&lit2_clauses_n)
+        })
+        .map(|l| *l)
+        .unwrap();
+
+    for clause2_id in ctx.formula.matrix[min_lit].iter()
+        .filter(|cl_id| **cl_id != clause_id) {
+        let clause2 = &mut ctx.formula.clauses[*clause2_id];
+
+        ctx.stats.checked += 1;
+
+        if clause2.literals.iter().all(|lit| {
+            let marks_index = usize::try_from(lit + i32::try_from(ctx.formula.variables).unwrap()).unwrap();
+            ctx.formula.marks[marks_index]
+        }) {
+            ctx.stats.subsumed += 1;
+            clause2.garbage = true;
+        }
+    }
+}
+
 fn backward_subsumption(ctx: &mut SATContext) {
     verbose!(ctx.config.verbosity, 1, "starting backward subsumption");
+
+    ctx.formula.clauses.sort_by(|cl1, cl2| {
+        cl1.literals.len()
+            .cmp(&cl2.literals.len())
+            .reverse()
+    });
+
+    for clause_id in 0..ctx.formula.clauses.len() {
+        verbose!(ctx.config.verbosity, 1, 
+            "Processing clause: {:?}", ctx.formula.clauses[clause_id].literals);
+
+        backward_subsume(ctx, clause_id);
+        ctx.formula.connect_clause(clause_id, ctx.config.verbosity);
+    }
+
+    verbose!(ctx.config.verbosity, 1, "finished backward subsumption");
 }
 
 fn simplify(ctx: &mut SATContext) {
     verbose!(ctx.config.verbosity, 1, "starting to simplify formula");
-    if ctx.config.forward_mode {
-        forward_subsumption(ctx);
-    } else {
-        backward_subsumption(ctx);
+    if !ctx.formula.empty_clause_occured {
+        if ctx.config.forward_mode {
+            forward_subsumption(ctx);
+        } else {
+            backward_subsumption(ctx);
+        }
     }
     verbose!(ctx.config.verbosity, 1, "simplification complete");
-    ctx.formula.collect_garbage_clauses(ctx.config.verbosity);
+    if !ctx.formula.empty_clause_occured {
+        ctx.formula.collect_garbage_clauses(ctx.config.verbosity);
+    }
 }
 
 fn parse_arguments() -> Config {
