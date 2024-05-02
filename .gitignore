@@ -3,3 +3,6 @@ target
 *.log
 *.err
 .direnv/
+dhat-heap.json
+solutions/*
+out/*
