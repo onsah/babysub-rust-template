@@ -6,3 +6,5 @@ target
 dhat-heap.json
 solutions/*
 out/*
+framegraph.svg
+*.data
