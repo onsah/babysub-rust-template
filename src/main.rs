@@ -5,6 +5,7 @@ use clap::{Arg, ArgAction, Command};
 use flate2;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::ops::{Index, IndexMut};
@@ -179,6 +180,8 @@ struct CNFFormula {
     clauses: Vec<Clause>,
     matrix: Matrix,
     marks: Vec<bool>,
+    /** clause id -> literal set */
+    variable_set_cache: HashMap<usize, HashSet<i32>>,
     empty_clause_occured: bool,
 }
 
@@ -191,6 +194,7 @@ impl CNFFormula {
             matrix: Matrix::new(),
             marks: Vec::new(),
             empty_clause_occured: false,
+            variable_set_cache: HashMap::new(),
         }
     }
 
@@ -315,6 +319,7 @@ fn trivial_clause(ctx: &mut SATContext, literals: Vec<i32>) -> Option<Vec<i32>> 
     let mut result = Vec::new();
 
     let marks = &mut ctx.formula.marks;
+    // TODO: this is bottleneck, use hashset
     marks.fill(false);
     
     for lit in literals {
@@ -510,27 +515,21 @@ fn backward_subsume(ctx: &mut SATContext, clause_id: usize) {
 
     for clause2_id in ctx.formula.matrix[min_lit].iter()
         .filter(|cl_id| **cl_id != clause_id) {
-        ctx.formula.marks.fill(false);
-
-        // TODO: Optimize check
-        {
-            let clause2 = &mut ctx.formula.clauses[*clause2_id];
-            if clause2.garbage {
-                continue;
-            }
-            for lit in clause2.literals.iter() {
-                let marks_index = usize::try_from(lit + i32::try_from(ctx.formula.variables).unwrap()).unwrap();
-                ctx.formula.marks[marks_index] = true;
-            }
-        }
+        
+        let literal_set: &HashSet<i32> = ctx.formula.variable_set_cache
+            .entry(*clause2_id)
+            .or_insert_with(|| {
+                let clause2 = &mut ctx.formula.clauses[*clause2_id];
+                HashSet::from_iter(clause2.literals.iter().map(|l| *l))
+            });
 
         ctx.stats.checked += 1;
 
         let clause = &ctx.formula.clauses[clause_id];
         if clause.literals.iter()
             .all(|lit| {
-                let marks_index = usize::try_from(lit + i32::try_from(ctx.formula.variables).unwrap()).unwrap();
-                ctx.formula.marks[marks_index]
+                // let marks_index = usize::try_from(lit + i32::try_from(ctx.formula.variables).unwrap()).unwrap();
+                literal_set.contains(lit)
             }) 
         {
             ctx.stats.subsumed += 1;
