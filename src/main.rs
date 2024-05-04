@@ -179,7 +179,6 @@ struct CNFFormula {
     added_clauses: usize,
     clauses: Vec<Clause>,
     matrix: Matrix,
-    marks: Vec<bool>,
     /** clause id -> literal set */
     variable_set_cache: HashMap<usize, HashSet<i32>>,
     empty_clause_occured: bool,
@@ -192,7 +191,6 @@ impl CNFFormula {
             added_clauses: 0,
             clauses: Vec::new(),
             matrix: Matrix::new(),
-            marks: Vec::new(),
             empty_clause_occured: false,
             variable_set_cache: HashMap::new(),
         }
@@ -315,23 +313,17 @@ fn compute_signature(ctx: &mut SATContext) -> u64 {
     hash
 }
 
-fn trivial_clause(ctx: &mut SATContext, literals: Vec<i32>) -> Option<Vec<i32>> {
+fn trivial_clause(literals: Vec<i32>) -> Option<Vec<i32>> {
     let mut result = Vec::new();
-
-    let marks = &mut ctx.formula.marks;
-    // TODO: this is bottleneck, use hashset
-    marks.fill(false);
+    
+    let mut occured: HashSet<i32> = HashSet::new(); 
     
     for lit in literals {
-        if marks[usize::try_from(-lit + i32::try_from(ctx.formula.variables).unwrap()).unwrap()] {
+        if occured.contains(&-lit) {
             // Trivial clause
             return None;
-        } else if marks[usize::try_from(lit + i32::try_from(ctx.formula.variables).unwrap()).unwrap()] {
-            // Redundant literal, do nothing
-        } else {
+        } else if occured.insert(lit) {
             result.push(lit);
-            let index = usize::try_from(lit + i32::try_from(ctx.formula.variables).unwrap()).unwrap();
-            marks[index] = true;
         }
     }
     
@@ -390,8 +382,6 @@ fn parse_cnf(input_path: String, ctx: &mut SATContext) -> io::Result<()> {
                 ctx.formula.variables,
                 clauses_count
             );
-            // + 1 creates a redundant space but it makes indexing easier
-            ctx.formula.marks = vec![false; ctx.formula.variables * 2 + 1];
             ctx.formula
                 .matrix
                 .init(ctx.formula.variables, ctx.config.verbosity);
@@ -410,7 +400,7 @@ fn parse_cnf(input_path: String, ctx: &mut SATContext) -> io::Result<()> {
                 .collect();
             LOG!(ctx.config.verbosity, "parsed clause: {:?}", literals);
             ctx.stats.parsed += 1;
-            if let Some(literals) = trivial_clause(ctx, literals) {
+            if let Some(literals) = trivial_clause(literals) {
                 if !literals.is_empty() {
                     ctx.formula.add_clause(literals, ctx.config.verbosity);
                 } else {
