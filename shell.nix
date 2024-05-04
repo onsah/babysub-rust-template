@@ -6,6 +6,7 @@ pkgs.mkShell {
 		# You can search packages via `nix search $term` or from https://search.nixos.org/packages
     cargo
     rustc
+		linuxKernel.packages.linux_latest_libre.perf
 	];
 
 	# For rust-analyzer to see std-source
